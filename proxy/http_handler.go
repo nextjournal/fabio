@@ -2,13 +2,12 @@ package proxy
 
 import (
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"time"
 )
 
 func newHTTPProxy(target *url.URL, tr http.RoundTripper, flush time.Duration) http.Handler {
-	return &httputil.ReverseProxy{
+	return &StreamingReverseProxy{
 		// this is a simplified director function based on the
 		// httputil.NewSingleHostReverseProxy() which does not
 		// mangle the request and target URL since the target
@@ -23,7 +22,6 @@ func newHTTPProxy(target *url.URL, tr http.RoundTripper, flush time.Duration) ht
 				req.Header.Set("User-Agent", "")
 			}
 		},
-		FlushInterval: flush,
 		Transport:     &transport{tr, nil, nil},
 	}
 }
