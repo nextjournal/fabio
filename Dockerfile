@@ -1,5 +1,5 @@
-FROM scratch
-ADD ca-certificates.crt /etc/ssl/certs/
+FROM alpine:3.7
+RUN apk add --no-cache bash curl
 ADD fabio.properties /etc/fabio/fabio.properties
 ADD fabio /
 EXPOSE 9998 9999
