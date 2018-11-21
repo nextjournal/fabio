@@ -7,16 +7,17 @@ import (
 )
 
 type Config struct {
-	Proxy       Proxy
-	Registry    Registry
-	Listen      []Listen
-	Log         Log
-	Metrics     Metrics
-	UI          UI
-	Runtime     Runtime
-	ProfileMode string
-	ProfilePath string
-	Insecure    bool
+	Proxy                Proxy
+	Registry             Registry
+	Listen               []Listen
+	Log                  Log
+	Metrics              Metrics
+	UI                   UI
+	Runtime              Runtime
+	ProfileMode          string
+	ProfilePath          string
+	Insecure             bool
+	GlobMatchingDisabled bool
 }
 
 type CertSource struct {
@@ -59,6 +60,7 @@ type Proxy struct {
 	ResponseHeaderTimeout time.Duration
 	KeepAliveTimeout      time.Duration
 	FlushInterval         time.Duration
+	GlobalFlushInterval   time.Duration
 	LocalIP               string
 	ClientIPHeader        string
 	TLSHeader             string

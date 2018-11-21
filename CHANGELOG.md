@@ -1,6 +1,78 @@
 ## Changelog
 
-### Unreleased
+### [v1.5.10](https://github.com/fabiolb/fabio/releases/tag/v1.5.10) - 25 Oct 2018
+
+#### Breaking Changes
+
+#### Bug Fixes
+
+ * [Issue #530](https://github.com/fabiolb/fabio/issues/530): Memory leak in go-metrics library
+
+   When metrics collection was enabled within fabio instances with very dynamic route changes memory usage quickly
+   ramped above expected levels.  Research done by [@galen0624](https://github.com/galen0624) identified the issue
+   and lead to the discovery of a fix in an updated version of the go-metrics library used by fabio.
+
+ * [Issue #506](https://github.com/fabiolb/fabio/issues/506): Wrong route for multiple matching host glob patterns
+
+   When multiple host glob patterns match an incoming request fabio can pick the wrong backend for the request.
+   This is because the sorting code that should sort the matching patterns from most specific to least specific
+   does not take into account that doamin names have their most specific part at the front. This has been fixed
+   by reversing the domain names before sorting.
+
+#### Improvements
+
+ * The default Docker image is now based on alpine:3.8 and runs the full test suite during build. It also sets
+   `/usr/bin/fabio` as `ENTRYPOINT` with `-cfg /etc/fabio/fabio.properties` as default command line arguments.
+   The previous image was built on `scratch`.
+
+ * [PR #497](https://github.com/fabiolb/fabio/pull/497): Make tests pass with latest Consul and Vault versions
+
+   Thanks to [@pschultz](https://github.com/pschultz) for the patch.
+
+ * [PR #531](https://github.com/fabiolb/fabio/pull/531): Set flush buffer interval for non-SSE requests
+
+   This PR adds a `proxy.globalflushinterval` option to configure an interval when the HTTP Response
+   Buffer is flushed.
+
+   Thanks to [@samm-git](https://github.com/samm-git) for the patch.
+
+ * [Issue #542](https://github.com/fabiolb/fabio/issues/542): Ignore host case when adding and matching routes
+
+  Fabio was forcing hostnames in routes added via Consul tags to lowercase.  This caused problems
+  with table lookups that were not case-insensitive.  The patch applied in #543 forces all routes added
+  via consul tags or the internal `addRoute` to have lower case hostnames in addition to forcing
+  hostnames to lowercase before performing table lookups.  This means that the host portion of routes and
+  host based table lookups in fabio are no longer case sensitive.
+
+  Thanks to [@shantanugadgil](https://github.com/shantanugadgil) for the patch.
+
+ * [Issue #548](https://github.com/fabiolb/fabio/issues/548): Slow glob matching with large number of services
+
+   This patch adds the new `glob.matching.enabled` option which controls whether glob matching is enabled for
+   route lookups. If the number of routes is large then the glob matching can have a performance impact and
+   disabling it may help.
+
+  Thanks to [@galen0624](https://github.com/galen0624) for the patch and
+  [@leprechau](https://github.com/leprechau) for the review.
+
+#### Features
+
+ * [Issue #544](https://github.com/fabiolb/fabio/issues/544): Add $host pseudo variable
+
+  This PR added support for `$host` pseudo variable that behaves similarly to the `$path` variable.
+  You should now be able to create a global redirect for requests received on any host to the same or different
+  request host on the same or different path when combined with the `$path` variable.  This allows for a truly global
+  protocol redirect of HTTP -> HTTPS traffic irrespective of host and path.
+
+  Thanks to [@holtwilkins](https://github.com/holtwilkins) for the patch.
+
+### [v1.5.9](https://github.com/fabiolb/fabio/releases/tag/v1.5.9) - 16 May 2018
+
+#### Notes
+
+ * [Issue #494](https://github.com/fabiolb/fabio/issues/494): Tests fail with Vault > 0.9.6 and Consul > 1.0.6
+
+   Needs more investigation.
 
 #### Breaking Changes
 
@@ -8,7 +80,29 @@
 
 #### Bug Fixes
 
- * None
+ * [Issue #460](https://github.com/fabiolb/fabio/issues/460): Fix access logging when gzip is enabled
+
+   Fabio was not writing access logs when the gzip compression was enabled.
+
+   Thanks to [@tino](https://github.com/tino) for finding this and providing
+   and initial patch.
+
+ * [PR #468](https://github.com/fabiolb/fabio/pull/468): Fix the regex of the example proxy.gzip.contenttype
+
+   The example regexp for `proxy.gzip.contenttype` in `fabio.properties` was not properly escaped.
+
+   Thanks to [@tino](https://github.com/tino) for the patch.
+
+ * [Issue #421](https://github.com/fabiolb/fabio/issues/421): Fabio routing to wrong backend
+
+   Fabio does not close websocket connections if the connection upgrade fails. This can lead to
+   connections being routed to the wrong backend if there is another HTTP router like nginx in
+   front of fabio. The failed websocket connection creates a direct TCP tunnel to the original
+   backend server and that connection is not closed properly.
+
+   The patches detect an unsuccessful handshake and close the connection properly.
+
+   Thanks to [@craigday](https://github.com/craigday) for the original reporting and debugging.
 
 #### Improvements
 
@@ -27,6 +121,32 @@
    Fabio will make `all` the default as of version 1.6.
 
    Thanks to [@systemfreund](https://github.com/systemfreund) for the patch.
+
+ * [Issue #448](https://github.com/fabiolb/fabio/issues/448): Redirect http to https on the same destination
+
+   Fabio will now handle redirecting from http to https on the same destination
+   without a redirect loop.
+
+   Thanks to [@leprechau](https://github.com/leprechau) for the patch and to
+   [@atillamas](https://github.com/atillamas) for the original PR and the
+   discussion.
+
+ * [PR #453](https://github.com/fabiolb/fabio/pull/453): Handle proxy chains of any length
+
+   Fabio will now validate that all elements of the `X-Forwarded-For` header
+   are allowed by the given ACL of the route. See discussion in
+   [PR #449](https://github.com/fabiolb/fabio/pull/449) for details.
+
+   Thanks to [@leprechau](https://github.com/leprechau) for the patch and to
+   [@atillamas](https://github.com/atillamas) for the original PR and the
+   discussion.
+
+ * [Issue #452](https://github.com/fabiolb/fabio/issues/452): Add improved glob matcher
+
+   Fabio now uses the `github.com/gobaws/glob` package for glob matching which
+   allows more complex patterns.
+
+   Thanks to [@sharbov](https://github.com/sharbov) for the patch.
 
 #### Features
 
@@ -226,6 +346,7 @@ urlprefix-/foo redirect=301,https://www.foo.com$path
  * [PR #315](https://github.com/fabiolb/fabio/pull/315)/[Issue #135](https://github.com/fabiolb/fabio/issues/135): Vault PKI cert source
 
    This adds support for using [Vault](https://vaultproject.io/) as a PKI cert source.
+
    Thanks to [@pschultz](https://github.com/pschultz) for providing this patch!
 
 #### Bug Fixes

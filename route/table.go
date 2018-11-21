@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/fabiolb/fabio/metrics"
-	"github.com/ryanuber/go-glob"
+	"github.com/gobwas/glob"
 )
 
 var errInvalidPrefix = errors.New("route: prefix must not be empty")
@@ -136,6 +136,7 @@ func NewTable(s string) (t Table, err error) {
 // addRoute adds a new route prefix -> target for the given service.
 func (t Table) addRoute(d *RouteDef) error {
 	host, path := hostpath(d.Src)
+	host = strings.ToLower(host) // maintain compatibility with parseURLPrefixTag
 
 	if d.Src == "" {
 		return errInvalidPrefix
@@ -153,13 +154,21 @@ func (t Table) addRoute(d *RouteDef) error {
 	switch {
 	// add new host
 	case t[host] == nil:
-		r := &Route{Host: host, Path: path}
+		g, err := glob.Compile(path)
+		if err != nil {
+			return err
+		}
+		r := &Route{Host: host, Path: path, Glob: g}
 		r.addTarget(d.Service, targetURL, d.Weight, d.Tags, d.Opts)
 		t[host] = Routes{r}
 
 	// add new route to existing host
 	case t[host].find(path) == nil:
-		r := &Route{Host: host, Path: path}
+		g, err := glob.Compile(path)
+		if err != nil {
+			return err
+		}
+		r := &Route{Host: host, Path: path, Glob: g}
 		r.addTarget(d.Service, targetURL, d.Weight, d.Tags, d.Opts)
 		t[host] = append(t[host], r)
 		sort.Sort(t[host])
@@ -290,33 +299,105 @@ func (t Table) matchingHosts(req *http.Request) (hosts []string) {
 	host := normalizeHost(req.Host, req.TLS != nil)
 	for pattern := range t {
 		normpat := normalizeHost(pattern, req.TLS != nil)
-		if glob.Glob(normpat, host) {
+		// TODO setup compiled GLOBs in a separate MAP
+		// TODO Issue #548
+		g := glob.MustCompile(normpat)
+		if g.Match(host) {
 			hosts = append(hosts, pattern)
 		}
 	}
+
+	if len(hosts) < 2 {
+		return
+	}
+
+	// Issue 506: multiple glob patterns hosts in wrong order
+	//
+	// DNS names have their most specific part at the front. In order to sort
+	// them from most specific to least specific a lexicographic sort will
+	// return the wrong result since it sorts by host name. *.foo.com will come
+	// before *.a.foo.com even though the latter is more specific. To achieve
+	// the correct result we need to reverse the strings, sort them and then
+	// reverse them again.
+	for i, h := range hosts {
+		hosts[i] = Reverse(h)
+	}
 	sort.Sort(sort.Reverse(sort.StringSlice(hosts)))
-	return hosts
+	for i, h := range hosts {
+		hosts[i] = Reverse(h)
+	}
+	return
+}
+
+// Issue 548 - Added separate func
+//
+// matchingHostNoGlob returns the route from the
+// routing table which matches the normalized request hostname.
+func (t Table) matchingHostNoGlob(req *http.Request) (hosts []string) {
+	host := normalizeHost(req.Host, req.TLS != nil)
+
+	for pattern := range t {
+		normpat := normalizeHost(pattern, req.TLS != nil)
+		if normpat == host {
+			//log.Printf("DEBUG Matched %s and %s", normpat, host)
+			hosts = append(hosts, pattern)
+			return
+		}
+	}
+	return
+}
+
+// Reverse returns its argument string reversed rune-wise left to right.
+//
+// taken from https://github.com/golang/example/blob/master/stringutil/reverse.go
+func Reverse(s string) string {
+	r := []rune(s)
+	for i, j := 0, len(r)-1; i < len(r)/2; i, j = i+1, j-1 {
+		r[i], r[j] = r[j], r[i]
+	}
+	return string(r)
 }
 
 // Lookup finds a target url based on the current matcher and picker
 // or nil if there is none. It first checks the routes for the host
 // and if none matches then it falls back to generic routes without
 // a host. This is useful for a catch-all '/' rule.
-func (t Table) Lookup(req *http.Request, trace string, pick picker, match matcher) (target *Target) {
-	path := req.URL.Path
+func (t Table) Lookup(req *http.Request, trace string, pick picker, match matcher, globDisabled bool) (target *Target) {
+
+	var hosts []string
 	if trace != "" {
 		if len(trace) > 16 {
 			trace = trace[:15]
 		}
-		log.Printf("[TRACE] %s Tracing %s%s", trace, req.Host, path)
+		log.Printf("[TRACE] %s Tracing %s%s", trace, req.Host, req.URL.Path)
 	}
 
 	// find matching hosts for the request
 	// and add "no host" as the fallback option
-	hosts := t.matchingHosts(req)
+	// if globDisabled then match without Glob
+	// Issue 548
+	if globDisabled {
+		hosts = t.matchingHostNoGlob(req)
+	} else {
+		hosts = t.matchingHosts(req)
+	}
+
+	if trace != "" {
+		log.Printf("[TRACE] %s Matching hosts: %v", trace, hosts)
+	}
 	hosts = append(hosts, "")
 	for _, h := range hosts {
-		if target = t.lookup(h, path, trace, pick, match); target != nil {
+		if target = t.lookup(h, req.URL.Path, trace, pick, match); target != nil {
+			if target.RedirectCode != 0 {
+				req.URL.Host = req.Host
+				target.BuildRedirectURL(req.URL) // build redirect url and cache in target
+				if target.RedirectURL.Scheme == req.Header.Get("X-Forwarded-Proto") &&
+					target.RedirectURL.Host == req.Host &&
+					target.RedirectURL.Path == req.URL.Path {
+					log.Print("[INFO] Skipping redirect with same scheme, host and path")
+					continue
+				}
+			}
 			break
 		}
 	}
@@ -333,6 +414,7 @@ func (t Table) LookupHost(host string, pick picker) *Target {
 }
 
 func (t Table) lookup(host, path, trace string, pick picker, match matcher) *Target {
+	host = strings.ToLower(host) // routes are always added lowercase
 	for _, r := range t[host] {
 		if match(path, r) {
 			n := len(r.Targets)

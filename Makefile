@@ -10,10 +10,6 @@ LAST_TAG = $(shell git describe --abbrev=0)
 # e.g. 1.5.5
 VERSION = $(shell git describe --abbrev=0 | cut -c 2-)
 
-# GO runs the go binary with garbage collection disabled for faster builds.
-# Do not specify a full path for go since travis will fail.
-GO = go
-
 # GOFLAGS is the flags for the go compiler. Currently, only the version number is
 # passed to the linker via the -ldflags.
 GOFLAGS = -ldflags "-X main.version=$(CUR_TAG)"
@@ -24,11 +20,9 @@ GOVERSION = $(shell go version | awk '{print $$3;}')
 # GORELEASER is the path to the goreleaser binary.
 GORELEASER = $(shell which goreleaser)
 
-# GOVENDOR is the path to the govendor binary.
-GOVENDOR = $(shell which govendor)
-
-# VENDORFMT is the path to the vendorfmt binary.
-VENDORFMT = $(shell which vendorfmt)
+# pin versions for CI builds
+CI_CONSUL_VERSION=1.3.0
+CI_VAULT_VERSION=0.11.4
 
 # all is the default target
 all: test
@@ -45,22 +39,12 @@ help:
 	@echo "clean     - remove temp files"
 
 # build compiles fabio and the test dependencies
-build: checkdeps vendorfmt gofmt
-	$(GO) build
+build: gofmt
+	go build
 
 # test runs the tests
 test: build
-	$(GO) test -v -test.timeout 15s `go list ./... | grep -v '/vendor/'`
-
-# checkdeps ensures that all required dependencies are vendored in
-checkdeps:
-	[ -x "$(GOVENDOR)" ] || $(GO) get -u github.com/kardianos/govendor
-	govendor list +e | grep '^ e ' && { echo "Found missing packages. Please run 'govendor add +e'"; exit 1; } || : echo
-
-# vendorfmt ensures that the vendor/vendor.json file is formatted correctly
-vendorfmt:
-	[ -x "$(VENDORFMT)" ] || $(GO) get -u github.com/magiconair/vendorfmt/cmd/vendorfmt
-	vendorfmt
+	go test -v -test.timeout 15s `go list ./... | grep -v '/vendor/'`
 
 # gofmt runs gofmt on the code
 gofmt:
@@ -68,11 +52,11 @@ gofmt:
 
 # linux builds a linux binary
 linux:
-	GOOS=linux GOARCH=amd64 $(GO) build -tags netgo $(GOFLAGS)
+	GOOS=linux GOARCH=amd64 go build -tags netgo $(GOFLAGS)
 
 # install runs go install
 install:
-	$(GO) install $(GOFLAGS)
+	go install $(GOFLAGS)
 
 # pkg builds a fabio.tar.gz package with only fabio in it
 pkg: build test
@@ -86,7 +70,7 @@ pkg: build test
 # later targets can pick up the new tag value.
 release:
 	$(MAKE) tag
-	$(MAKE) preflight test gorelease homebrew docker-aliases
+	$(MAKE) preflight docker-test gorelease homebrew
 
 # preflight runs some checks before a release
 preflight:
@@ -107,20 +91,26 @@ gorelease:
 homebrew:
 	build/homebrew.sh $(LAST_TAG)
 
-# docker-aliases creates aliases for the docker containers
-# since goreleaser doesn't handle that properly yet
-docker-aliases:
-	docker tag fabiolb/fabio:$(VERSION)-$(GOVERSION) magiconair/fabio:$(VERSION)-$(GOVERSION)
-	docker tag fabiolb/fabio:$(VERSION)-$(GOVERSION) magiconair/fabio:latest
-	docker push magiconair/fabio:$(VERSION)-$(GOVERSION)
-	docker push magiconair/fabio:latest
+# docker-test runs make test in a Docker container with
+# pinned versions of the external dependencies
+#
+# We download the binaries outside the Docker build to
+# cache the binaries and prevent repeated downloads since
+# ADD <url> downloads the file every time.
+docker-test:
+	docker build \
+		--build-arg consul_version=$(CI_CONSUL_VERSION) \
+		--build-arg vault_version=$(CI_VAULT_VERSION) \
+		-t test-fabio \
+		-f Dockerfile \
+		.
 
 # codeship runs the CI on codeship
 codeship:
 	go version
 	go env
-	wget -O ~/consul.zip https://releases.hashicorp.com/consul/1.0.6/consul_1.0.6_linux_amd64.zip
-	wget -O ~/vault.zip https://releases.hashicorp.com/vault/0.9.3/vault_0.9.3_linux_amd64.zip
+	wget -O ~/consul.zip https://releases.hashicorp.com/consul/$(CI_CONSUL_VERSION)/consul_$(CI_CONSUL_VERSION)_linux_amd64.zip
+	wget -O ~/vault.zip https://releases.hashicorp.com/vault/$(CI_VAULT_VERSION)/vault_$(CI_VAULT_VERSION)_linux_amd64.zip
 	unzip -o -d ~/bin ~/consul.zip
 	unzip -o -d ~/bin ~/vault.zip
 	vault --version
@@ -129,8 +119,8 @@ codeship:
 
 # clean removes intermediate files
 clean:
-	$(GO) clean
+	go clean
 	rm -rf pkg dist fabio
 	find . -name '*.test' -delete
 
-.PHONY: all build checkdeps clean codeship gofmt gorelease help homebrew install linux pkg preflight release tag test vendorfmt
+.PHONY: all build clean codeship gofmt gorelease help homebrew install linux pkg preflight release tag test

@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,12 @@ import (
 	"github.com/fabiolb/fabio/proxy/internal"
 	"github.com/fabiolb/fabio/route"
 	"github.com/pascaldekloe/goe/verify"
+)
+
+const (
+	// helper constants for the Lookup function
+	globEnabled  = false
+	globDisabled = true
 )
 
 func TestProxyProducesCorrectXForwardedSomethingHeader(t *testing.T) {
@@ -116,9 +123,8 @@ func TestProxySTSHeader(t *testing.T) {
 }
 
 func TestProxyChecksHeaderForAccessRules(t *testing.T) {
-	var hdr http.Header = make(http.Header)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hdr = r.Header
+		fmt.Fprintln(w, "OK")
 	}))
 	defer server.Close()
 
@@ -188,7 +194,7 @@ func TestProxyStripsPath(t *testing.T) {
 		Transport: http.DefaultTransport,
 		Lookup: func(r *http.Request) *route.Target {
 			tbl, _ := route.NewTable("route add mock /foo/bar " + server.URL + ` opts "strip=/foo"`)
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 	})
 	defer proxy.Close()
@@ -224,7 +230,7 @@ func TestProxyHost(t *testing.T) {
 			},
 		},
 		Lookup: func(r *http.Request) *route.Target {
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 	})
 	defer proxy.Close()
@@ -262,7 +268,46 @@ func TestProxyHost(t *testing.T) {
 	})
 }
 
-func TestRedirect(t *testing.T) {
+func TestHostRedirect(t *testing.T) {
+	routes := "route add https-redir *:80 https://$host$path opts \"redirect=301\"\n"
+
+	tbl, _ := route.NewTable(routes)
+
+	proxy := httptest.NewServer(&HTTPProxy{
+		Transport: http.DefaultTransport,
+		Lookup: func(r *http.Request) *route.Target {
+			r.Host = "c.com"
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
+		},
+	})
+	defer proxy.Close()
+
+	tests := []struct {
+		req      string
+		wantCode int
+		wantLoc  string
+	}{
+		{req: "/baz", wantCode: 301, wantLoc: "https://c.com/baz"},
+	}
+
+	http.DefaultClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// do not follow redirects
+		return http.ErrUseLastResponse
+	}
+
+	for _, tt := range tests {
+		resp, _ := mustGet(proxy.URL + tt.req)
+		if resp.StatusCode != tt.wantCode {
+			t.Errorf("got status code %d, want %d", resp.StatusCode, tt.wantCode)
+		}
+		gotLoc, _ := resp.Location()
+		if gotLoc.String() != tt.wantLoc {
+			t.Errorf("got location %s, want %s", gotLoc, tt.wantLoc)
+		}
+	}
+}
+
+func TestPathRedirect(t *testing.T) {
 	routes := "route add mock / http://a.com/$path opts \"redirect=301\"\n"
 	routes += "route add mock /foo http://a.com/abc opts \"redirect=301\"\n"
 	routes += "route add mock /bar http://b.com/$path opts \"redirect=302 strip=/bar\"\n"
@@ -271,7 +316,7 @@ func TestRedirect(t *testing.T) {
 	proxy := httptest.NewServer(&HTTPProxy{
 		Transport: http.DefaultTransport,
 		Lookup: func(r *http.Request) *route.Target {
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 	})
 	defer proxy.Close()
@@ -284,7 +329,7 @@ func TestRedirect(t *testing.T) {
 		{req: "/", wantCode: 301, wantLoc: "http://a.com/"},
 		{req: "/aaa/bbb", wantCode: 301, wantLoc: "http://a.com/aaa/bbb"},
 		{req: "/foo", wantCode: 301, wantLoc: "http://a.com/abc"},
-		{req: "/bar", wantCode: 302, wantLoc: "http://b.com"},
+		{req: "/bar", wantCode: 302, wantLoc: "http://b.com/"},
 		{req: "/bar/aaa", wantCode: 302, wantLoc: "http://b.com/aaa"},
 	}
 
@@ -306,6 +351,24 @@ func TestRedirect(t *testing.T) {
 }
 
 func TestProxyLogOutput(t *testing.T) {
+	t.Run("uncompressed response", func(t *testing.T) {
+		testProxyLogOutput(t, 73, config.Proxy{})
+	})
+	t.Run("compression enabled but no match", func(t *testing.T) {
+		testProxyLogOutput(t, 73, config.Proxy{
+			GZIPContentTypes: regexp.MustCompile(`^$`),
+		})
+	})
+	t.Run("compression enabled and active", func(t *testing.T) {
+		testProxyLogOutput(t, 28, config.Proxy{
+			GZIPContentTypes: regexp.MustCompile(`.*`),
+		})
+	})
+}
+
+func testProxyLogOutput(t *testing.T, bodySize int, cfg config.Proxy) {
+	t.Helper()
+
 	// build a format string from all log fields and one header field
 	fields := []string{"header.X-Foo:$header.X-Foo"}
 	for _, k := range logger.Fields {
@@ -322,13 +385,14 @@ func TestProxyLogOutput(t *testing.T) {
 
 	// create an upstream server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "foo")
+		fmt.Fprint(w, "foooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo")
 	}))
 	defer server.Close()
 
 	// create a proxy handler with mocked time
 	tm := time.Date(2016, 1, 1, 0, 0, 0, 12345678, time.UTC)
 	proxyHandler := &HTTPProxy{
+		Config: cfg,
 		Time: func() time.Time {
 			defer func() { tm = tm.Add(1111111111 * time.Nanosecond) }()
 			return tm
@@ -379,7 +443,7 @@ func TestProxyLogOutput(t *testing.T) {
 		"request_scheme:http",
 		"request_uri:/foo?x=y",
 		"request_url:http://example.com/foo?x=y",
-		"response_body_size:3",
+		"response_body_size:" + strconv.Itoa(bodySize),
 		"response_status:200",
 		"response_time_ms:1.111",
 		"response_time_ns:1.111111111",
@@ -420,7 +484,7 @@ func TestProxyHTTPSUpstream(t *testing.T) {
 		Transport: &http.Transport{TLSClientConfig: tlsClientConfig()},
 		Lookup: func(r *http.Request) *route.Target {
 			tbl, _ := route.NewTable("route add srv / " + server.URL + ` opts "proto=https"`)
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 	})
 	defer proxy.Close()
@@ -439,7 +503,6 @@ func TestProxyHTTPSUpstreamSkipVerify(t *testing.T) {
 	server.TLS = &tls.Config{}
 	server.StartTLS()
 	defer server.Close()
-
 	proxy := httptest.NewServer(&HTTPProxy{
 		Config:    config.Proxy{},
 		Transport: http.DefaultTransport,
@@ -448,7 +511,7 @@ func TestProxyHTTPSUpstreamSkipVerify(t *testing.T) {
 		},
 		Lookup: func(r *http.Request) *route.Target {
 			tbl, _ := route.NewTable("route add srv / " + server.URL + ` opts "proto=https tlsskipverify=true"`)
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 	})
 	defer proxy.Close()
@@ -649,7 +712,7 @@ func BenchmarkProxyLogger(b *testing.B) {
 		Transport: http.DefaultTransport,
 		Lookup: func(r *http.Request) *route.Target {
 			tbl, _ := route.NewTable("route add mock / " + server.URL)
-			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"])
+			return tbl.Lookup(r, "", route.Picker["rr"], route.Matcher["prefix"], globEnabled)
 		},
 		Logger: l,
 	}

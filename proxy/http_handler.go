@@ -22,20 +22,7 @@ func newHTTPProxy(target *url.URL, tr http.RoundTripper, flush time.Duration) ht
 				req.Header.Set("User-Agent", "")
 			}
 		},
-		Transport:     &transport{tr, nil, nil},
+		FlushInterval: flush,
+		Transport:     tr,
 	}
-}
-
-// transport executes the roundtrip and captures the response. It is not
-// safe for multiple or concurrent use since it only captures a single
-// response.
-type transport struct {
-	http.RoundTripper
-	resp *http.Response
-	err  error
-}
-
-func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
-	t.resp, t.err = t.RoundTripper.RoundTrip(r)
-	return t.resp, t.err
 }
