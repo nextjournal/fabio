@@ -3,12 +3,14 @@ set -eo pipefail
 SHA=$(git rev-parse --short HEAD)
 IMAGE="nextjournal/fabio"
 TAG="${IMAGE}:$SHA"
-LATEST="${IMAGE}:latest"
+CONSUL_VERSION=1.3.0
+VAULT_VERSION=0.11.4
 
-cp ./build/ca-certificates.crt .
+docker build \
+  --build-arg consul_version=$CONSUL_VERSION \
+  --build-arg vault_verson=$VAULT_VERSION \
+  -t $TAG \
+  -f Dockerfile \
+  .
 
-docker run --rm -v $(pwd):/go/src/github.com/fabiolb/fabio -w /go/src/github.com/fabiolb/fabio golang:1.10 make linux
-docker build -t $TAG -f Dockerfile .
-docker tag $TAG $LATEST
 docker push $TAG
-docker push $LATEST
