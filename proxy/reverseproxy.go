@@ -371,6 +371,9 @@ func (p *ReverseProxy) copyBuffer(dst io.Writer, src io.Reader, buf []byte) (int
 			nw, werr := dst.Write(buf[:nr])
 			if nw > 0 {
 				written += int64(nw)
+				if fl, ok := dst.(http.Flusher); ok {
+					fl.Flush()
+				}
 			}
 			if werr != nil {
 				return written, werr
