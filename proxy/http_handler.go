@@ -7,7 +7,7 @@ import (
 )
 
 func newHTTPProxy(target *url.URL, tr http.RoundTripper, flush time.Duration) http.Handler {
-	return &StreamingReverseProxy{
+	return &ReverseProxy{
 		// this is a simplified director function based on the
 		// httputil.NewSingleHostReverseProxy() which does not
 		// mangle the request and target URL since the target
