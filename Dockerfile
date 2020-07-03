@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test  -ldflags "-s -w" ./...
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w"
 
 FROM alpine:3.8
-RUN apk update && apk add ca-certificates bash grep curl && rm -rf /var/cache/apk/*
+RUN apk update && apk add ca-certificates bash grep curl jq && rm -rf /var/cache/apk/*
 COPY --from=build /go/src/github.com/fabiolb/fabio/fabio /usr/bin
 ADD fabio.properties /etc/fabio/fabio.properties
 EXPOSE 9998 9999
